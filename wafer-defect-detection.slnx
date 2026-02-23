@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="wafer-defect-detection.vcxproj" />
+  <Project Path="wafer-defect-detection.vcxproj" Id="493bbc1a-e9ec-96c7-2fd3-d0aadcd65788" />
 </Solution>                                          
