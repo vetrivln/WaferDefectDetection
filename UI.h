@@ -8,21 +8,19 @@ struct Defect
     cv::Point2f center;
     cv::Rect    boundingBox;
     float       area;
-    std::string type; // classified as either 
-                      // "speck", "scratch", "cluster" for now
+    float       ar;
+    std::string type; /* "speck", "scratch", or "cluster" */
 };
 
-// Ensure strings returned by .NET are optimized for
-// interop with std::string 
 static std::string
-ToStdString(System::String^ s)
+to_std_string(System::String^ s)
 {
     return msclr::interop::marshal_as<std::string>(s);
 }
 
-// Converts an OpenCV Mat to a .NET Bitmap for display in the UI.
+/* Convert an OpenCV Mat to a .NET Bitmap for display in the UI. */
 static System::Drawing::Bitmap^
-MatToBitmap(const cv::Mat& mat)
+mat_to_bitmap(const cv::Mat& mat)
 {
     cv::Mat bgr;
     if (mat.channels() == 1)
@@ -31,31 +29,32 @@ MatToBitmap(const cv::Mat& mat)
         bgr = mat;
 
     cv::Mat rgb;
-	cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB); // TODO: Fix output being BGR instead of RGB
+    cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
 
-    System::Drawing::Bitmap^ bmp = gcnew System::Drawing::Bitmap(
-        rgb.cols, rgb.rows,
-        System::Drawing::Imaging::PixelFormat::Format24bppRgb);
+    System::Drawing::Bitmap^ bmp
+        = gcnew System::Drawing::Bitmap(
+            rgb.cols, rgb.rows,
+            System::Drawing::Imaging::PixelFormat::Format24bppRgb);
 
     System::Drawing::Rectangle rect(0, 0, bmp->Width, bmp->Height);
-    System::Drawing::Imaging::BitmapData^ bmpData =
-        bmp->LockBits(rect,
+    System::Drawing::Imaging::BitmapData^ bmp_data
+        = bmp->LockBits(rect,
             System::Drawing::Imaging::ImageLockMode::WriteOnly,
             bmp->PixelFormat);
 
     for (int y = 0; y < rgb.rows; y++)
         memcpy(
-            (char*)bmpData->Scan0.ToPointer() + y * bmpData->Stride,
+            (char*)bmp_data->Scan0.ToPointer() + y * bmp_data->Stride,
             rgb.ptr(y),
             rgb.cols * 3);
 
-    bmp->UnlockBits(bmpData);
+    bmp->UnlockBits(bmp_data);
     return bmp;
 }
 
-// Extracts a binary mask of the lens area from the grayscale image.
+/* Extract a binary mask of the lens area from a grayscale image. */
 static cv::Mat
-extractLensMask(const cv::Mat& gray)
+extract_lens_mask(const cv::Mat& gray)
 {
     cv::Mat mask;
     cv::threshold(gray, mask, 8, 255, cv::THRESH_BINARY);
@@ -64,91 +63,98 @@ extractLensMask(const cv::Mat& gray)
     cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
     cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
 
-    // Keep only the largest contour (the lens disc)
+    /* Keep only the largest contour (the lens disc). */
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(mask, contours,
         cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
-    cv::Mat cleanMask = cv::Mat::zeros(gray.size(), CV_8U);
+    cv::Mat clean_mask = cv::Mat::zeros(gray.size(), CV_8U);
     if (!contours.empty())
     {
         int    largest = 0;
-        double maxArea = 0;
+        double max_area = 0.0;
+
         for (int i = 0; i < (int)contours.size(); i++)
         {
             double a = cv::contourArea(contours[i]);
-            if (a > maxArea)
+            if (a > max_area)
             {
-                maxArea = a;
+                max_area = a;
                 largest = i;
             }
         }
-        cv::drawContours(cleanMask, contours, largest, 255, cv::FILLED);
+
+        cv::drawContours(clean_mask, contours, largest, 255, cv::FILLED);
     }
-    return cleanMask;
+
+    return clean_mask;
 }
 
-// Corrects uneven illumination across the lens by estimating
-// the background and normalizing.
+/* Correct uneven illumination across the lens by estimating the background
+   and normalising.  Division is more stable than subtraction on dark images. */
 static cv::Mat
-correctIllumination(const cv::Mat& gray, const cv::Mat& mask, int blurSize)
+correct_illumination(const cv::Mat& gray,
+    const cv::Mat& mask,
+    int            blur_size)
 {
-    // blurSize must be odd
-    if (blurSize % 2 == 0)
-        blurSize++;
+    if (blur_size % 2 == 0)
+        blur_size++;
 
-    cv::Mat floatGray;
-    gray.convertTo(floatGray, CV_32F);
+    cv::Mat float_gray;
+    gray.convertTo(float_gray, CV_32F);
 
     cv::Mat background;
-    cv::GaussianBlur(floatGray, background, { blurSize, blurSize }, 0);
+    cv::GaussianBlur(float_gray, background, { blur_size, blur_size }, 0);
 
-    // Division is more stable than subtraction on dark images
     cv::Mat corrected;
-    cv::divide(floatGray + 1.0f, background + 1.0f, corrected);
+    cv::divide(float_gray + 1.0f, background + 1.0f, corrected);
     cv::normalize(corrected, corrected, 0, 255, cv::NORM_MINMAX, CV_8U, mask);
 
     return corrected;
 }
 
-// Detects defects by enhancing local contrast, isolating small bright features,
+/* Detect defects by enhancing local contrast and isolating small bright
+   features with a white top-hat transform. */
 static cv::Mat
-detectDefects(const cv::Mat& corrected, const cv::Mat& mask, int threshold)
+detect_defects(const cv::Mat& corrected,
+    const cv::Mat& mask,
+    int            threshold)
 {
-    // CLAHE — boost local contrast
+    /* CLAHE — boost local contrast. */
     cv::Mat enhanced;
     auto clahe = cv::createCLAHE(3.0, { 8, 8 });
     clahe->apply(corrected, enhanced);
 
-    // White top-hat — isolates small bright features
+    /* White top-hat — isolates small bright features. */
     cv::Mat tophat;
     auto kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, { 7, 7 });
     cv::morphologyEx(enhanced, tophat, cv::MORPH_TOPHAT, kernel);
 
-    // Threshold to binary defect mask
-    cv::Mat defectMask;
-    cv::threshold(tophat, defectMask, threshold, 255, cv::THRESH_BINARY);
+    /* Threshold to binary defect mask. */
+    cv::Mat defect_mask;
+    cv::threshold(tophat, defect_mask, threshold, 255, cv::THRESH_BINARY);
 
-    // Remove single-pixel noise
-    auto noiseKernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, { 3, 3 });
-    cv::morphologyEx(defectMask, defectMask, cv::MORPH_OPEN, noiseKernel);
+    /* Remove single-pixel noise. */
+    auto noise_kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, { 3, 3 });
+    cv::morphologyEx(defect_mask, defect_mask, cv::MORPH_OPEN, noise_kernel);
 
-    // Clip to lens area
-    cv::bitwise_and(defectMask, mask, defectMask);
+    /* Clip to lens area. */
+    cv::bitwise_and(defect_mask, mask, defect_mask);
 
-    return defectMask;
+    return defect_mask;
 }
 
-// Analyzes the binary defect mask to extract properties
-// of each defect and classify them.
+/* Analyse the binary defect mask: extract per-defect properties and
+   classify each one as "speck", "scratch", or "cluster". */
 static std::vector<Defect>
-analyzeDefects(const cv::Mat& defectMask)
+analyze_defects(const cv::Mat& defect_mask)
 {
     std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(defectMask, contours,
+    cv::findContours(defect_mask, contours,
         cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
     std::vector<Defect> defects;
+
     for (auto& c : contours)
     {
         float area = (float)cv::contourArea(c);
@@ -159,55 +165,60 @@ analyzeDefects(const cv::Mat& defectMask)
         d.area = area;
         d.boundingBox = cv::boundingRect(c);
 
-        auto M = cv::moments(c);
-        d.center = { (float)(M.m10 / M.m00), (float)(M.m01 / M.m00) };
+        auto moments = cv::moments(c);
+        d.center = { (float)(moments.m10 / moments.m00),
+                    (float)(moments.m01 / moments.m00) };
 
         float w = (float)d.boundingBox.width;
         float h = (float)d.boundingBox.height;
         float ar = w / std::max<float>(h, 1.0f);
+        d.ar = ar;
 
-        bool isElongated = (ar > 2.5f || ar < 0.40f);
-        bool isLargeEnough = (area > 20.0f);
+        bool is_elongated = (ar > 2.5f || ar <= 0.70f);
+        bool is_large_enough = (area > 5.0f);
 
-        if (isElongated && isLargeEnough)      d.type = "scratch";
-        else if (area > 150.0f)                d.type = "cluster";
-        else                                   d.type = "speck";
+        if (is_elongated && is_large_enough) d.type = "scratch";
+        else if (area > 150.0f)                   d.type = "cluster";
+        else                                      d.type = "speck";
 
         defects.push_back(d);
     }
+
     return defects;
 }
 
-// Overlaying the lens boundary and defect markers
+/* Build an annotated BGR display image: draw the lens boundary and
+   per-defect markers (colour-coded by type). */
 static cv::Mat
-buildAnnotatedDisplay(const cv::Mat& corrected,
+build_annotated_display(const cv::Mat& corrected,
     const cv::Mat& mask,
     const std::vector<Defect>& defects,
-    bool                       pass,
-    float                      ratio)
+    bool                        pass,
+    float                       ratio)
 {
-    // Base display image
     cv::Mat display;
     cv::cvtColor(corrected, display, cv::COLOR_GRAY2BGR);
 
-    // Lens boundary
+    /* Lens boundary. */
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(mask, contours,
         cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
     cv::drawContours(display, contours, -1, { 0, 255, 0 }, 3);
 
-    // Defect markers
+    /* Defect markers. */
     for (int i = 0; i < (int)defects.size(); i++)
     {
         const auto& d = defects[i];
 
-        cv::Scalar color = (d.type == "scratch") ? cv::Scalar(0, 0, 255)
+        cv::Scalar color
+            = (d.type == "scratch") ? cv::Scalar(0, 0, 255)
             : (d.type == "cluster") ? cv::Scalar(0, 165, 255)
             : cv::Scalar(255, 0, 255);
 
         int radius = std::max<float>(8, (int)std::sqrt(d.area) + 4);
-        cv::circle(display, d.center, radius, color, 1);
-        cv::putText(display, std::to_string(i + 1),
+        cv::circle(display, d.center, radius, color, 2);
+        cv::putText(display,
+            std::to_string(i + 1),
             { (int)d.center.x + radius + 2, (int)d.center.y + 4 },
             cv::FONT_HERSHEY_SIMPLEX, 0.4, color, 1);
     }
@@ -215,9 +226,9 @@ buildAnnotatedDisplay(const cv::Mat& corrected,
     return display;
 }
 
-// ─────────────────────────────────────────────────────────────
-// WINFORMS UI
-// ─────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────
+   WinForms UI
+   ───────────────────────────────────────────────────────────────────────── */
 
 namespace waferdefectdetection
 {
@@ -234,361 +245,471 @@ namespace waferdefectdetection
         UI(void)
         {
             InitializeComponent();
-            currentDefects = gcnew System::Collections::Generic::List<IntPtr>();
-            hasImage = false;
+            current_defects_ = gcnew System::Collections::Generic::List<IntPtr>();
+            has_image_ = false;
         }
 
     protected:
         ~UI()
         {
-            if (components)
-                delete components;
+            if (components_)
+                delete components_;
         }
 
-        // ── Controls ────────────────────────────────────────────────
+        /* ── Controls ───────────────────────────────────────────────────── */
     private:
-        System::Windows::Forms::OpenFileDialog^ dlg;
-        System::Windows::Forms::Button^ btnLoad;
-        System::Windows::Forms::Button^ btnAnalyze;
-        System::Windows::Forms::Label^ lblFilename;
-        System::Windows::Forms::Label^ lblVerdict;
-        System::Windows::Forms::Label^ lblDefectInfo;
-        System::Windows::Forms::Label^ lblThreshold;
-        System::Windows::Forms::Label^ lblBlur;
-        System::Windows::Forms::PictureBox^ pbOriginal;
-        System::Windows::Forms::PictureBox^ pbAnalyzed;
-        System::Windows::Forms::PictureBox^ pbZoom;
-        System::Windows::Forms::NumericUpDown^ nudThreshold;
-        System::Windows::Forms::NumericUpDown^ nudBlur;
-        System::ComponentModel::Container^ components;
+        System::Windows::Forms::OpenFileDialog^ dlg_;
+        System::Windows::Forms::Button^ btn_load_;
+        System::Windows::Forms::Button^ btn_analyze_;
+        System::Windows::Forms::Label^ lbl_filename_;
+        System::Windows::Forms::Label^ lbl_verdict_;
+        System::Windows::Forms::Label^ lbl_defect_info_;
+        System::Windows::Forms::Label^ lbl_threshold_;
+        System::Windows::Forms::PictureBox^ pb_original_;
+        System::Windows::Forms::PictureBox^ pb_analyzed_;
+        System::Windows::Forms::PictureBox^ pb_zoom_;
+        System::Windows::Forms::NumericUpDown^ nud_threshold_;
+        System::Windows::Forms::NumericUpDown^ nud_blur_;
+        System::Windows::Forms::Label^ lbl_gaussian_blur_;
+        System::Windows::Forms::FlowLayoutPanel^ flp_defects_;
+        System::Windows::Forms::Label^ lbl_defect_list_title_;
+        System::ComponentModel::Container^ components_;
 
-    private:
-        bool                 hasImage;
-        cv::Mat*             storedGray;
-        cv::Mat*             storedCorrected;
-        cv::Mat*             storedMask;
-        cv::Mat*             storedDisplay;
-        std::vector<Defect>* storedDefects;
-    private: 
-        System::Windows::Forms::Label^ gBlurThreshold;
-        System::Collections::Generic::List<IntPtr>^ currentDefects;
+        /* ── State ──────────────────────────────────────────────────────── */
+        bool                 has_image_;
+        cv::Mat* stored_gray_;
+        cv::Mat* stored_corrected_;
+        cv::Mat* stored_mask_;
+        cv::Mat* stored_display_;
+        std::vector<Defect>* stored_defects_;
+
+        System::Collections::Generic::List<IntPtr>^ current_defects_;
 
 #pragma region Windows Form Designer generated code
         void InitializeComponent(void)
         {
-            this->dlg = (gcnew System::Windows::Forms::OpenFileDialog());
-            this->btnLoad = (gcnew System::Windows::Forms::Button());
-            this->btnAnalyze = (gcnew System::Windows::Forms::Button());
-            this->lblFilename = (gcnew System::Windows::Forms::Label());
-            this->lblVerdict = (gcnew System::Windows::Forms::Label());
-            this->lblDefectInfo = (gcnew System::Windows::Forms::Label());
-            this->lblThreshold = (gcnew System::Windows::Forms::Label());
-            this->lblBlur = (gcnew System::Windows::Forms::Label());
-            this->pbOriginal = (gcnew System::Windows::Forms::PictureBox());
-            this->pbAnalyzed = (gcnew System::Windows::Forms::PictureBox());
-            this->pbZoom = (gcnew System::Windows::Forms::PictureBox());
-            this->nudThreshold = (gcnew System::Windows::Forms::NumericUpDown());
-            this->nudBlur = (gcnew System::Windows::Forms::NumericUpDown());
-            this->gBlurThreshold = (gcnew System::Windows::Forms::Label());
-            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pbOriginal))->BeginInit();
-            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pbAnalyzed))->BeginInit();
-            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pbZoom))->BeginInit();
-            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->nudThreshold))->BeginInit();
-            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->nudBlur))->BeginInit();
+            this->dlg_ = (gcnew System::Windows::Forms::OpenFileDialog());
+            this->btn_load_ = (gcnew System::Windows::Forms::Button());
+            this->btn_analyze_ = (gcnew System::Windows::Forms::Button());
+            this->lbl_filename_ = (gcnew System::Windows::Forms::Label());
+            this->lbl_verdict_ = (gcnew System::Windows::Forms::Label());
+            this->lbl_defect_info_ = (gcnew System::Windows::Forms::Label());
+            this->lbl_threshold_ = (gcnew System::Windows::Forms::Label());
+            this->pb_original_ = (gcnew System::Windows::Forms::PictureBox());
+            this->pb_analyzed_ = (gcnew System::Windows::Forms::PictureBox());
+            this->pb_zoom_ = (gcnew System::Windows::Forms::PictureBox());
+            this->nud_threshold_ = (gcnew System::Windows::Forms::NumericUpDown());
+            this->nud_blur_ = (gcnew System::Windows::Forms::NumericUpDown());
+            this->lbl_gaussian_blur_ = (gcnew System::Windows::Forms::Label());
+            this->flp_defects_ = (gcnew System::Windows::Forms::FlowLayoutPanel());
+            this->lbl_defect_list_title_ = (gcnew System::Windows::Forms::Label());
+            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pb_original_))->BeginInit();
+            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pb_analyzed_))->BeginInit();
+            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pb_zoom_))->BeginInit();
+            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->nud_threshold_))->BeginInit();
+            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->nud_blur_))->BeginInit();
             this->SuspendLayout();
             // 
-            // btnLoad
+            // btn_load_
             // 
-            this->btnLoad->Location = System::Drawing::Point(12, 12);
-            this->btnLoad->Name = L"btnLoad";
-            this->btnLoad->Size = System::Drawing::Size(140, 45);
-            this->btnLoad->TabIndex = 0;
-            this->btnLoad->Text = L"Load Image";
-            this->btnLoad->Click += gcnew System::EventHandler(this, &UI::btnLoad_Click);
+            this->btn_load_->Location = System::Drawing::Point(12, 12);
+            this->btn_load_->Name = L"btn_load_";
+            this->btn_load_->Size = System::Drawing::Size(140, 45);
+            this->btn_load_->TabIndex = 0;
+            this->btn_load_->Text = L"Load Image";
+            this->btn_load_->Click += gcnew System::EventHandler(this, &UI::btn_load_click);
             // 
-            // btnAnalyze
+            // btn_analyze_
             // 
-            this->btnAnalyze->Enabled = false;
-            this->btnAnalyze->Location = System::Drawing::Point(12, 65);
-            this->btnAnalyze->Name = L"btnAnalyze";
-            this->btnAnalyze->Size = System::Drawing::Size(140, 45);
-            this->btnAnalyze->TabIndex = 1;
-            this->btnAnalyze->Text = L"Identify Defects";
-            this->btnAnalyze->Click += gcnew System::EventHandler(this, &UI::btnAnalyze_Click);
+            this->btn_analyze_->Enabled = false;
+            this->btn_analyze_->Location = System::Drawing::Point(12, 65);
+            this->btn_analyze_->Name = L"btn_analyze_";
+            this->btn_analyze_->Size = System::Drawing::Size(140, 45);
+            this->btn_analyze_->TabIndex = 1;
+            this->btn_analyze_->Text = L"Identify Defects";
+            this->btn_analyze_->Click += gcnew System::EventHandler(this, &UI::btn_analyze_click);
             // 
-            // lblFilename
+            // lbl_filename_
             // 
-            this->lblFilename->Location = System::Drawing::Point(165, 25);
-            this->lblFilename->Name = L"lblFilename";
-            this->lblFilename->Size = System::Drawing::Size(400, 20);
-            this->lblFilename->TabIndex = 2;
-            this->lblFilename->Text = L"No file selected";
+            this->lbl_filename_->Location = System::Drawing::Point(21, 124);
+            this->lbl_filename_->Name = L"lbl_filename_";
+            this->lbl_filename_->Size = System::Drawing::Size(400, 20);
+            this->lbl_filename_->TabIndex = 2;
+            this->lbl_filename_->Text = L"No file selected";
             // 
-            // lblVerdict
+            // lbl_verdict_
             // 
-            this->lblVerdict->Font = (gcnew System::Drawing::Font(L"Microsoft Sans Serif", 14, System::Drawing::FontStyle::Bold));
-            this->lblVerdict->Location = System::Drawing::Point(165, 55);
-            this->lblVerdict->Name = L"lblVerdict";
-            this->lblVerdict->Size = System::Drawing::Size(600, 28);
-            this->lblVerdict->TabIndex = 3;
+            this->lbl_verdict_->Font = (gcnew System::Drawing::Font(L"Microsoft Sans Serif", 14, System::Drawing::FontStyle::Bold));
+            this->lbl_verdict_->Location = System::Drawing::Point(208, 7);
+            this->lbl_verdict_->Name = L"lbl_verdict_";
+            this->lbl_verdict_->Size = System::Drawing::Size(600, 28);
+            this->lbl_verdict_->TabIndex = 3;
             // 
-            // lblDefectInfo
+            // lbl_defect_info_
             // 
-            this->lblDefectInfo->Font = (gcnew System::Drawing::Font(L"Microsoft Sans Serif", 10));
-            this->lblDefectInfo->Location = System::Drawing::Point(1153, 390);
-            this->lblDefectInfo->Name = L"lblDefectInfo";
-            this->lblDefectInfo->Size = System::Drawing::Size(320, 120);
-            this->lblDefectInfo->TabIndex = 11;
-            this->lblDefectInfo->Text = L"Click a defect on the right\nimage to inspect it here";
+            this->lbl_defect_info_->Font = (gcnew System::Drawing::Font(L"Microsoft Sans Serif", 10));
+            this->lbl_defect_info_->Location = System::Drawing::Point(552, 565);
+            this->lbl_defect_info_->Name = L"lbl_defect_info_";
+            this->lbl_defect_info_->Size = System::Drawing::Size(320, 47);
+            this->lbl_defect_info_->TabIndex = 11;
+            this->lbl_defect_info_->Text = L"Click a defect to inspect it here";
             // 
-            // lblThreshold
+            // lbl_threshold_
             // 
-            this->lblThreshold->Location = System::Drawing::Point(620, 18);
-            this->lblThreshold->Name = L"lblThreshold";
-            this->lblThreshold->Size = System::Drawing::Size(180, 20);
-            this->lblThreshold->TabIndex = 4;
-            this->lblThreshold->Text = L"Detection Threshold:";
+            this->lbl_threshold_->Location = System::Drawing::Point(187, 55);
+            this->lbl_threshold_->Name = L"lbl_threshold_";
+            this->lbl_threshold_->Size = System::Drawing::Size(180, 20);
+            this->lbl_threshold_->TabIndex = 4;
+            this->lbl_threshold_->Text = L"Detection Threshold:";
             // 
-            // lblBlur
+            // pb_original_
             // 
-            this->lblBlur->Location = System::Drawing::Point(620, 55);
-            this->lblBlur->Name = L"lblBlur";
-            this->lblBlur->Size = System::Drawing::Size(180, 20);
-            this->lblBlur->TabIndex = 6;
-            this->lblBlur->Text = L"Gaussian Blur Size:";
+            this->pb_original_->BorderStyle = System::Windows::Forms::BorderStyle::FixedSingle;
+            this->pb_original_->Location = System::Drawing::Point(556, 238);
+            this->pb_original_->Name = L"pb_original_";
+            this->pb_original_->Size = System::Drawing::Size(310, 310);
+            this->pb_original_->SizeMode = System::Windows::Forms::PictureBoxSizeMode::Zoom;
+            this->pb_original_->TabIndex = 8;
+            this->pb_original_->TabStop = false;
             // 
-            // pbOriginal
+            // pb_analyzed_
             // 
-            this->pbOriginal->BorderStyle = System::Windows::Forms::BorderStyle::FixedSingle;
-            this->pbOriginal->Location = System::Drawing::Point(27, 121);
-            this->pbOriginal->Name = L"pbOriginal";
-            this->pbOriginal->Size = System::Drawing::Size(500, 483);
-            this->pbOriginal->SizeMode = System::Windows::Forms::PictureBoxSizeMode::Zoom;
-            this->pbOriginal->TabIndex = 8;
-            this->pbOriginal->TabStop = false;
+            this->pb_analyzed_->BorderStyle = System::Windows::Forms::BorderStyle::FixedSingle;
+            this->pb_analyzed_->Cursor = System::Windows::Forms::Cursors::Cross;
+            this->pb_analyzed_->Location = System::Drawing::Point(24, 150);
+            this->pb_analyzed_->Name = L"pb_analyzed_";
+            this->pb_analyzed_->Size = System::Drawing::Size(500, 500);
+            this->pb_analyzed_->SizeMode = System::Windows::Forms::PictureBoxSizeMode::Zoom;
+            this->pb_analyzed_->TabIndex = 9;
+            this->pb_analyzed_->TabStop = false;
+            this->pb_analyzed_->Click += gcnew System::EventHandler(this, &UI::pb_analyzed_click);
             // 
-            // pbAnalyzed
+            // pb_zoom_
             // 
-            this->pbAnalyzed->BorderStyle = System::Windows::Forms::BorderStyle::FixedSingle;
-            this->pbAnalyzed->Cursor = System::Windows::Forms::Cursors::Cross;
-            this->pbAnalyzed->Location = System::Drawing::Point(599, 121);
-            this->pbAnalyzed->Name = L"pbAnalyzed";
-            this->pbAnalyzed->Size = System::Drawing::Size(475, 483);
-            this->pbAnalyzed->SizeMode = System::Windows::Forms::PictureBoxSizeMode::Zoom;
-            this->pbAnalyzed->TabIndex = 9;
-            this->pbAnalyzed->TabStop = false;
-            this->pbAnalyzed->Click += gcnew System::EventHandler(this, &UI::pbAnalyzed_Click);
+            this->pb_zoom_->BorderStyle = System::Windows::Forms::BorderStyle::FixedSingle;
+            this->pb_zoom_->Location = System::Drawing::Point(661, 55);
+            this->pb_zoom_->Name = L"pb_zoom_";
+            this->pb_zoom_->Size = System::Drawing::Size(192, 168);
+            this->pb_zoom_->SizeMode = System::Windows::Forms::PictureBoxSizeMode::Zoom;
+            this->pb_zoom_->TabIndex = 10;
+            this->pb_zoom_->TabStop = false;
             // 
-            // pbZoom
+            // nud_threshold_
             // 
-            this->pbZoom->BorderStyle = System::Windows::Forms::BorderStyle::FixedSingle;
-            this->pbZoom->Location = System::Drawing::Point(1153, 43);
-            this->pbZoom->Name = L"pbZoom";
-            this->pbZoom->Size = System::Drawing::Size(320, 320);
-            this->pbZoom->SizeMode = System::Windows::Forms::PictureBoxSizeMode::Zoom;
-            this->pbZoom->TabIndex = 10;
-            this->pbZoom->TabStop = false;
+            this->nud_threshold_->Location = System::Drawing::Point(400, 53);
+            this->nud_threshold_->Maximum = System::Decimal(gcnew cli::array< System::Int32 >(4) { 255, 0, 0, 0 });
+            this->nud_threshold_->Minimum = System::Decimal(gcnew cli::array< System::Int32 >(4) { 1, 0, 0, 0 });
+            this->nud_threshold_->Name = L"nud_threshold_";
+            this->nud_threshold_->Size = System::Drawing::Size(80, 22);
+            this->nud_threshold_->TabIndex = 5;
+            this->nud_threshold_->Value = System::Decimal(gcnew cli::array< System::Int32 >(4) { 17, 0, 0, 0 });
             // 
-            // nudThreshold
+            // nud_blur_
             // 
-            this->nudThreshold->Location = System::Drawing::Point(810, 15);
-            this->nudThreshold->Maximum = System::Decimal(gcnew cli::array< System::Int32 >(4) { 255, 0, 0, 0 });
-            this->nudThreshold->Minimum = System::Decimal(gcnew cli::array< System::Int32 >(4) { 1, 0, 0, 0 });
-            this->nudThreshold->Name = L"nudThreshold";
-            this->nudThreshold->Size = System::Drawing::Size(80, 22);
-            this->nudThreshold->TabIndex = 5;
-            this->nudThreshold->Value = System::Decimal(gcnew cli::array< System::Int32 >(4) { 17, 0, 0, 0 });
+            this->nud_blur_->Location = System::Drawing::Point(400, 88);
+            this->nud_blur_->Maximum = System::Decimal(gcnew cli::array< System::Int32 >(4) { 401, 0, 0, 0 });
+            this->nud_blur_->Minimum = System::Decimal(gcnew cli::array< System::Int32 >(4) { 75, 0, 0, 0 });
+            this->nud_blur_->Name = L"nud_blur_";
+            this->nud_blur_->Size = System::Drawing::Size(80, 22);
+            this->nud_blur_->TabIndex = 7;
+            this->nud_blur_->Value = System::Decimal(gcnew cli::array< System::Int32 >(4) { 201, 0, 0, 0 });
             // 
-            // nudBlur
+            // lbl_gaussian_blur_
             // 
-            this->nudBlur->Location = System::Drawing::Point(810, 52);
-            this->nudBlur->Maximum = System::Decimal(gcnew cli::array< System::Int32 >(4) { 401, 0, 0, 0 });
-            this->nudBlur->Minimum = System::Decimal(gcnew cli::array< System::Int32 >(4) { 75, 0, 0, 0 });
-            this->nudBlur->Name = L"nudBlur";
-            this->nudBlur->Size = System::Drawing::Size(80, 22);
-            this->nudBlur->TabIndex = 7;
-            this->nudBlur->Value = System::Decimal(gcnew cli::array< System::Int32 >(4) { 201, 0, 0, 0 });
+            this->lbl_gaussian_blur_->Location = System::Drawing::Point(187, 90);
+            this->lbl_gaussian_blur_->Name = L"lbl_gaussian_blur_";
+            this->lbl_gaussian_blur_->Size = System::Drawing::Size(180, 20);
+            this->lbl_gaussian_blur_->TabIndex = 12;
+            this->lbl_gaussian_blur_->Text = L"Gaussian Blur Threshold:";
             // 
-            // gBlurThreshold
+            // flp_defects_
             // 
-            this->gBlurThreshold->Location = System::Drawing::Point(620, 55);
-            this->gBlurThreshold->Name = L"gBlurThreshold";
-            this->gBlurThreshold->Size = System::Drawing::Size(180, 20);
-            this->gBlurThreshold->TabIndex = 12;
-            this->gBlurThreshold->Text = L"Gaussian Blur Threshold:";
+            this->flp_defects_->AutoScroll = true;
+            this->flp_defects_->BackColor = System::Drawing::Color::FromArgb(static_cast<System::Int32>(static_cast<System::Byte>(30)), static_cast<System::Int32>(static_cast<System::Byte>(30)),
+                static_cast<System::Int32>(static_cast<System::Byte>(30)));
+            this->flp_defects_->FlowDirection = System::Windows::Forms::FlowDirection::TopDown;
+            this->flp_defects_->Location = System::Drawing::Point(878, 32);
+            this->flp_defects_->Name = L"flp_defects_";
+            this->flp_defects_->Padding = System::Windows::Forms::Padding(4);
+            this->flp_defects_->Size = System::Drawing::Size(364, 618);
+            this->flp_defects_->TabIndex = 0;
+            this->flp_defects_->WrapContents = false;
+            // 
+            // lbl_defect_list_title_
+            // 
+            this->lbl_defect_list_title_->Font = (gcnew System::Drawing::Font(L"Microsoft Sans Serif", 10, System::Drawing::FontStyle::Bold));
+            this->lbl_defect_list_title_->Location = System::Drawing::Point(874, 7);
+            this->lbl_defect_list_title_->Name = L"lbl_defect_list_title_";
+            this->lbl_defect_list_title_->Size = System::Drawing::Size(340, 22);
+            this->lbl_defect_list_title_->TabIndex = 13;
+            this->lbl_defect_list_title_->Text = L"Defect List";
             // 
             // UI
             // 
-            this->ClientSize = System::Drawing::Size(1528, 673);
-            this->Controls->Add(this->gBlurThreshold);
-            this->Controls->Add(this->btnLoad);
-            this->Controls->Add(this->btnAnalyze);
-            this->Controls->Add(this->lblFilename);
-            this->Controls->Add(this->lblVerdict);
-            this->Controls->Add(this->lblThreshold);
-            this->Controls->Add(this->nudThreshold);
-            this->Controls->Add(this->lblBlur);
-            this->Controls->Add(this->nudBlur);
-            this->Controls->Add(this->pbOriginal);
-            this->Controls->Add(this->pbAnalyzed);
-            this->Controls->Add(this->pbZoom);
-            this->Controls->Add(this->lblDefectInfo);
+            this->AutoScroll = true;
+            this->AutoSize = true;
+            this->AutoSizeMode = System::Windows::Forms::AutoSizeMode::GrowAndShrink;
+            this->ClientSize = System::Drawing::Size(1262, 673);
+            this->Controls->Add(this->flp_defects_);
+            this->Controls->Add(this->lbl_gaussian_blur_);
+            this->Controls->Add(this->btn_load_);
+            this->Controls->Add(this->btn_analyze_);
+            this->Controls->Add(this->lbl_filename_);
+            this->Controls->Add(this->lbl_verdict_);
+            this->Controls->Add(this->lbl_threshold_);
+            this->Controls->Add(this->nud_threshold_);
+            this->Controls->Add(this->nud_blur_);
+            this->Controls->Add(this->pb_original_);
+            this->Controls->Add(this->pb_analyzed_);
+            this->Controls->Add(this->pb_zoom_);
+            this->Controls->Add(this->lbl_defect_info_);
+            this->Controls->Add(this->lbl_defect_list_title_);
             this->Name = L"UI";
             this->Text = L"Wafer Defect Inspector";
             this->WindowState = System::Windows::Forms::FormWindowState::Maximized;
-            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pbOriginal))->EndInit();
-            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pbAnalyzed))->EndInit();
-            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pbZoom))->EndInit();
-            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->nudThreshold))->EndInit();
-            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->nudBlur))->EndInit();
+            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pb_original_))->EndInit();
+            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pb_analyzed_))->EndInit();
+            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->pb_zoom_))->EndInit();
+            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->nud_threshold_))->EndInit();
+            (cli::safe_cast<System::ComponentModel::ISupportInitialize^>(this->nud_blur_))->EndInit();
             this->ResumeLayout(false);
 
         }
 #pragma endregion
 
-    private: System::Void
-        btnLoad_Click(System::Object^ sender, System::EventArgs^ e)
-    {
-        dlg->Filter = "BMP Images|*.bmp|All Files|*.*";
-        if (dlg->ShowDialog() != System::Windows::Forms::DialogResult::OK)
-            return;
-
-        std::string path = ToStdString(dlg->FileName);
-
-        cv::Mat img = cv::imread(path, cv::IMREAD_COLOR);
-        if (img.empty())
+    private:
+        void
+            select_defect(int idx)
         {
-            MessageBox::Show("Failed to load image.");
-            return;
+            const Defect& d = (*stored_defects_)[idx];
+
+            int padding = 50;
+            int x = std::max<float>(0, (int)d.center.x - padding);
+            int y = std::max<float>(0, (int)d.center.y - padding);
+            int w = std::min<float>(stored_corrected_->cols - x, padding * 2);
+            int h = std::min<float>(stored_corrected_->rows - y, padding * 2);
+
+            cv::Mat crop = (*stored_corrected_)(cv::Rect(x, y, w, h)).clone();
+            cv::Mat zoomed;
+            cv::resize(crop, zoomed, { 320, 320 }, 0, 0, cv::INTER_NEAREST);
+
+            cv::Mat zoomed_color;
+            cv::cvtColor(zoomed, zoomed_color, cv::COLOR_GRAY2BGR);
+
+            int cx = (int)((d.center.x - x) * (320.0f / w));
+            int cy = (int)((d.center.y - y) * (320.0f / h));
+            cv::drawMarker(zoomed_color, { cx, cy },
+                { 0, 255, 255 }, cv::MARKER_CROSS, 20, 1);
+
+            pb_zoom_->Image = mat_to_bitmap(zoomed_color);
+
+            lbl_defect_info_->Text = System::String::Format(
+                "Defect #{0}\nType:      {1}\nArea:      {2:F1} px\nAR:      {5:F1} px\nLocation: ({3:F0}, {4:F0})",
+                idx + 1,
+                gcnew System::String(d.type.c_str()),
+                d.area,
+                d.center.x, d.center.y,
+                d.ar);
         }
 
-        storedGray = new cv::Mat();
-        storedMask = new cv::Mat();
-        cv::cvtColor(img, *storedGray, cv::COLOR_BGR2GRAY);
-        *storedMask = extractLensMask(*storedGray);
-
-        pbOriginal->Image = MatToBitmap(img);
-        pbAnalyzed->Image = nullptr;
-        pbZoom->Image = nullptr;
-        lblVerdict->Text = "";
-        lblDefectInfo->Text =
-            L"Click a defect on the right\nimage to inspect it here";
-        lblFilename->Text = System::IO::Path::GetFileName(dlg->FileName);
-
-        hasImage = true;
-        btnAnalyze->Enabled = true;
-    }
-
-    private: System::Void
-        btnAnalyze_Click(System::Object^ sender, System::EventArgs^ e)
-    {
-        if (!hasImage)
-            return;
-
-        int blurSize = static_cast<int> (nudBlur->Value);
-        int threshold = static_cast<int> (nudThreshold->Value);
-
-        storedCorrected = new cv::Mat(
-            correctIllumination(*storedGray, *storedMask, blurSize));
-
-        cv::Mat defectMask = detectDefects(*storedCorrected, *storedMask, threshold);
-
-        storedDefects = new std::vector<Defect>(analyzeDefects(defectMask));
-
-        // PASS / FAIL
-        float lensPixels = (float)cv::countNonZero(*storedMask);
-        float defectPixels = (float)cv::countNonZero(defectMask);
-        float ratio = defectPixels / std::max<float>(lensPixels, 1.0f);
-        bool  pass = (ratio < 0.000005f);
-
-        storedDisplay = new cv::Mat(
-            buildAnnotatedDisplay(*storedCorrected, *storedMask,
-                *storedDefects, pass, ratio));
-
-        pbAnalyzed->Image = MatToBitmap(*storedDisplay);
-
-        lblVerdict->Text = System::String::Format(
-            "{0}  |  Defects: {1}  |  Area: {2:F4}%",
-            pass ? "PASS" : "FAIL",
-            storedDefects->size(),
-            ratio * 100.0f);
-
-        lblVerdict->ForeColor = pass
-            ? System::Drawing::Color::Green
-            : System::Drawing::Color::Red;
-    }
-
-           // ── CLICK TO ZOOM ────────────────────────────────────────────
-    private: System::Void
-        pbAnalyzed_Click(System::Object^ sender, System::EventArgs^ e)
-    {
-        if (!hasImage || !storedDefects || storedDefects->empty())
-            return;
-
-        auto me = safe_cast<System::Windows::Forms::MouseEventArgs^> (e);
-
-        // Convert PictureBox click coords → image coords
-        // Account for Zoom mode letterboxing
-        int   imgW = storedDisplay->cols;
-        int   imgH = storedDisplay->rows;
-        int   boxW = pbAnalyzed->Width;
-        int   boxH = pbAnalyzed->Height;
-        float scale = std::min<float>((float)boxW / imgW, (float)boxH / imgH);
-        int   offsetX = (boxW - (int)(imgW * scale)) / 2;
-        int   offsetY = (boxH - (int)(imgH * scale)) / 2;
-
-        float imgX = (me->X - offsetX) / scale;
-        float imgY = (me->Y - offsetY) / scale;
-
-        // Subtract banner height
-        imgY -= 70;
-
-        // Find nearest defect
-        int   nearestIdx = 0;
-        float nearestDist = FLT_MAX;
-        for (int i = 0; i < (int)storedDefects->size(); i++)
+        void
+            populate_defect_list()
         {
-            float dx = (*storedDefects)[i].center.x - imgX;
-            float dy = (*storedDefects)[i].center.y - imgY;
-            float dist = std::sqrt(dx * dx + dy * dy);
-            if (dist < nearestDist)
+            flp_defects_->Controls->Clear();
+
+            for (int i = 0; i < (int)stored_defects_->size(); i++)
             {
-                nearestDist = dist;
-                nearestIdx = i;
+                const Defect& d = (*stored_defects_)[i];
+
+                /* Card panel */
+                System::Windows::Forms::Panel^ card
+                    = gcnew System::Windows::Forms::Panel();
+                card->Size = System::Drawing::Size(310, 76);
+                card->Margin = System::Windows::Forms::Padding(4, 4, 4, 0);
+                card->BackColor = System::Drawing::Color::FromArgb(50, 50, 55);
+                card->Cursor = System::Windows::Forms::Cursors::Hand;
+                card->Tag = i;
+
+                /* Thumbnail */
+                int pad = 30;
+                int tx = std::max<float>(0, (int)d.center.x - pad);
+                int ty = std::max<float>(0, (int)d.center.y - pad);
+                int tw = std::min<float>(stored_corrected_->cols - tx, pad * 2);
+                int th = std::min<float>(stored_corrected_->rows - ty, pad * 2);
+
+                cv::Mat thumb = (*stored_corrected_)(cv::Rect(tx, ty, tw, th)).clone();
+                cv::Mat thumb_small;
+                cv::resize(thumb, thumb_small, { 64, 64 }, 0, 0, cv::INTER_NEAREST);
+
+                System::Windows::Forms::PictureBox^ pb
+                    = gcnew System::Windows::Forms::PictureBox();
+                pb->Image = mat_to_bitmap(thumb_small);
+                pb->Size = System::Drawing::Size(64, 64);
+                pb->Location = System::Drawing::Point(4, 6);
+                pb->SizeMode = System::Windows::Forms::PictureBoxSizeMode::Zoom;
+                pb->BorderStyle = System::Windows::Forms::BorderStyle::FixedSingle;
+                pb->Tag = i;
+
+                /* Info label */
+                System::Drawing::Color type_color;
+                if (d.type == "scratch")
+                    type_color = System::Drawing::Color::FromArgb(255, 80, 80);
+                else if (d.type == "cluster")
+                    type_color = System::Drawing::Color::FromArgb(255, 165, 0);
+                else
+                    type_color = System::Drawing::Color::FromArgb(220, 80, 220);
+
+                System::String^ type_str = gcnew System::String(d.type.c_str());
+
+                System::Windows::Forms::Label^ lbl
+                    = gcnew System::Windows::Forms::Label();
+                lbl->Text = System::String::Format(
+                    "#{0}  {1}\nArea: {2:F1} px\nAR: {5:F1}\n({3:F0}, {4:F0})",
+                    i + 1, type_str, d.area, d.center.x, d.center.y, d.ar);
+                lbl->ForeColor = type_color;
+                lbl->Font = gcnew System::Drawing::Font(L"Consolas", 9);
+                lbl->Location = System::Drawing::Point(74, 6);
+                lbl->Size = System::Drawing::Size(228, 64);
+                lbl->Tag = i;
+
+                /* Click handlers — card, pb and lbl all forward to select_defect. */
+                card->Click += gcnew System::EventHandler(this, &UI::defect_card_click);
+                pb->Click += gcnew System::EventHandler(this, &UI::defect_card_click);
+                lbl->Click += gcnew System::EventHandler(this, &UI::defect_card_click);
+
+                card->Controls->Add(pb);
+                card->Controls->Add(lbl);
+                flp_defects_->Controls->Add(card);
             }
         }
 
-        const Defect& d = (*storedDefects)[nearestIdx];
+        System::Void
+            defect_card_click(System::Object^ sender, System::EventArgs^ e)
+        {
+            System::Windows::Forms::Control^ ctrl
+                = safe_cast<System::Windows::Forms::Control^> (sender);
+            int idx = safe_cast<int> (ctrl->Tag);
+            select_defect(idx);
+        }
 
-        // Crop around defect from corrected image (clean, no overlays)
-        int padding = 50;
-        int x = std::max<float>(0, (int)d.center.x - padding);
-        int y = std::max<float>(0, (int)d.center.y - padding);
-        int w = std::min<float>(storedCorrected->cols - x, padding * 2);
-        int h = std::min<float>(storedCorrected->rows - y, padding * 2);
+        System::Void
+            btn_load_click(System::Object^ sender, System::EventArgs^ e)
+        {
+            dlg_->Filter = "BMP Images|*.bmp|All Files|*.*";
+            if (dlg_->ShowDialog() != System::Windows::Forms::DialogResult::OK)
+                return;
 
-        cv::Mat crop = (*storedCorrected)(cv::Rect(x, y, w, h)).clone();
+            std::string path = to_std_string(dlg_->FileName);
 
-        // Upscale
-        cv::Mat zoomed;
-        cv::resize(crop, zoomed, { 320, 320 }, 0, 0, cv::INTER_NEAREST);
+            cv::Mat img = cv::imread(path, cv::IMREAD_COLOR);
+            if (img.empty())
+            {
+                MessageBox::Show("Failed to load image.");
+                return;
+            }
 
-        // Crosshair at defect center
-        cv::Mat zoomedColor;
-        cv::cvtColor(zoomed, zoomedColor, cv::COLOR_GRAY2BGR);
-        int cx = (int)((d.center.x - x) * (320.0f / w));
-        int cy = (int)((d.center.y - y) * (320.0f / h));
-        cv::drawMarker(zoomedColor, { cx, cy },
-            { 0, 255, 255 }, cv::MARKER_CROSS, 20, 1);
+            stored_gray_ = new cv::Mat();
+            stored_mask_ = new cv::Mat();
+            cv::cvtColor(img, *stored_gray_, cv::COLOR_BGR2GRAY);
+            *stored_mask_ = extract_lens_mask(*stored_gray_);
 
-        pbZoom->Image = MatToBitmap(zoomedColor);
+            pb_original_->Image = Image::FromFile(dlg_->FileName);
+            pb_analyzed_->Image = nullptr;
+            pb_zoom_->Image = nullptr;
+            lbl_verdict_->Text = "";
+            lbl_defect_info_->Text
+                = L"Click a defect on the right\nimage to inspect it here";
+            lbl_filename_->Text
+                = System::IO::Path::GetFileName(dlg_->FileName);
+            flp_defects_->Controls->Clear();
 
-        lblDefectInfo->Text = System::String::Format(
-            "Defect #{0}\nType:      {1}\nArea:      {2:F1} px\nLocation: ({3:F0}, {4:F0})",
-            nearestIdx + 1,
-            gcnew System::String(d.type.c_str()),
-            d.area,
-            d.center.x, d.center.y);
-    }
-    };
-}
+            has_image_ = true;
+            btn_analyze_->Enabled = true;
+        }
+
+        System::Void
+            btn_analyze_click(System::Object^ sender, System::EventArgs^ e)
+        {
+            if (!has_image_)
+                return;
+
+            int blur_size = static_cast<int> (nud_blur_->Value);
+            int threshold = static_cast<int> (nud_threshold_->Value);
+
+            stored_corrected_
+                = new cv::Mat(correct_illumination(*stored_gray_,
+                    *stored_mask_,
+                    blur_size));
+
+            cv::Mat defect_mask
+                = detect_defects(*stored_corrected_, *stored_mask_, threshold);
+
+            stored_defects_
+                = new std::vector<Defect>(analyze_defects(defect_mask));
+
+            /* PASS / FAIL */
+            float lens_pixels = (float)cv::countNonZero(*stored_mask_);
+            float defect_pixels = (float)cv::countNonZero(defect_mask);
+            float ratio = defect_pixels / std::max<float>(lens_pixels, 1.0f);
+            bool  pass = (ratio < 0.000005f);
+
+            stored_display_
+                = new cv::Mat(build_annotated_display(*stored_corrected_,
+                    *stored_mask_,
+                    *stored_defects_,
+                    pass, ratio));
+
+            pb_analyzed_->Image = mat_to_bitmap(*stored_display_);
+
+            lbl_verdict_->Text = System::String::Format(
+                "{0}  |  Defects: {1}  |  Area: {2:F4}%",
+                pass ? "Y" : "N",
+                stored_defects_->size(),
+                ratio * 100.0f);
+
+            lbl_verdict_->ForeColor
+                = pass ? System::Drawing::Color::Green
+                : System::Drawing::Color::Red;
+
+            populate_defect_list();
+        }
+
+        System::Void
+            pb_analyzed_click(System::Object^ sender, System::EventArgs^ e)
+        {
+            if (!has_image_ || !stored_defects_ || stored_defects_->empty())
+                return;
+
+            auto me = safe_cast<System::Windows::Forms::MouseEventArgs^> (e);
+
+            int   img_w = stored_display_->cols;
+            int   img_h = stored_display_->rows;
+            int   box_w = pb_analyzed_->Width;
+            int   box_h = pb_analyzed_->Height;
+            float scale = std::min<float>((float)box_w / img_w,
+                (float)box_h / img_h);
+            int   off_x = (box_w - (int)(img_w * scale)) / 2;
+            int   off_y = (box_h - (int)(img_h * scale)) / 2;
+
+            float img_x = (me->X - off_x) / scale;
+            float img_y = (me->Y - off_y) / scale - 70;
+
+            int   nearest_idx = 0;
+            float nearest_dist = FLT_MAX;
+
+            for (int i = 0; i < (int)stored_defects_->size(); i++)
+            {
+                float dx = (*stored_defects_)[i].center.x - img_x;
+                float dy = (*stored_defects_)[i].center.y - img_y;
+                float dist = std::sqrt(dx * dx + dy * dy);
+                if (dist < nearest_dist)
+                {
+                    nearest_dist = dist;
+                    nearest_idx = i;
+                }
+            }
+
+            select_defect(nearest_idx);
+        }
+};
+} /* namespace waferdefectdetection */
