@@ -2,12 +2,13 @@
 using namespace waferdefectdetection;
 
 [STAThreadAttribute]
-int main(array<System::String^>^ args)
+int main (array<System::String^>^ args)
 {
 	// Enabling Windows XP visual effects before any controls are created
-	//Application::EnableVisualStyles();
-	//Application::SetCompatibleTextRenderingDefault(false);
+	// Application::EnableVisualStyles ();
+	// Application::SetCompatibleTextRenderingDefault (false);
+	
 	// Create the main window and run it
-	Application::Run(gcnew UI());
+	Application::Run (gcnew UI ());
 	return 0;
 }
