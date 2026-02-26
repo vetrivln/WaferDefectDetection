@@ -75,11 +75,11 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <IncludePath>C:\opencv\build\include;$(IncludePath)</IncludePath>
+    <IncludePath>C:\opencv\build\include;C:\Users\vetrivln\Desktop\opencv\wafer-defect-detection\include;$(IncludePath)</IncludePath>
     <LibraryPath>C:\opencv\build\x64\vc16\lib;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <IncludePath>C:\opencv\build\include;$(IncludePath)</IncludePath>
+    <IncludePath>C:\opencv\build\include;C:\Users\vetrivln\Desktop\opencv\wafer-defect-detection\include;$(IncludePath)</IncludePath>
     <LibraryPath>C:\opencv\build\x64\vc16\lib;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -126,17 +126,17 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="UI.cpp" />
+    <ClCompile Include="src/UI.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="UI.h">
+    <ClInclude Include="include/UI.resx" />
+    <ClInclude Include="include/resource.h" />
+    <ClInclude Include="include/UI.h">
       <FileType>CppForm</FileType>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="UI.resx">
-      <DependentUpon>UI.h</DependentUpon>
-    </EmbeddedResource>
+    <ResourceCompile Include="wafer-defect-detection.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
