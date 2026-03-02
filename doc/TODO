@@ -1,0 +1,28 @@
+TODO for WaferDefectDetection
+==============================
+
+* IMMEDIATE
+  - Add results table to README with accuracy metrics
+  - Document defect type taxonomy used in classification
+
+* DETECTION IMPROVEMENTS
+  - Improve segmentation accuracy on low-contrast defects, decide on a Gaussian blur range
+  - Add support for multiple simultaneous defect classification
+  - Benchmark against an dataset
+  - Handle edge cases
+
+* PERFORMANCE
+  - Reduce false positive rate on clean wafers
+  - Optimize for near real-time output
+
+* CODEBASE
+  - Add inline comments to core detection logic
+  - Add input validation for unsupported image formats
+
+* FUTURE
+  - Port pipeline to Python/PyTorch for deep learning integration
+  - Investigate model interpretability
+  - Evaluate deployment feasibility on edge hardware
+
+* KNOWN BUGS:
+  - Initial Values for Threshold and Gaussian blur remain zero, even though value hardcoded in UI.h
