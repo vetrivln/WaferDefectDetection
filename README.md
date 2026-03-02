@@ -1,11 +1,15 @@
 # Wafer Defect Detection
 
-This project aims to identify the defects in wafer images using computer vision
-techniques. The dataset consists of high-resolution images of wafers, which may
-or may not contain defects of different types.
+[![](https://images2.imgbox.com/d0/f0/iXsAjyM9_o.png)]()
 
-The goal is to segment the defective regions in the images and classify the 
-type of defect present.
+<sub>Detection output on a sample optical lens image: defective regions 
+are segmented and highlighted, with defect classification overlaid</sub>
+
+A C++ and OpenCV based computer vision system for automated detection and 
+classification of defects on semiconductor wafer surfaces. Designed to segment 
+defective regions from high-resolution wafer imagery and identify defect type. 
+
+Built as a proof-of-concept for inline inspection in semiconductor manufacturing workflows
 
 ## Setup:
 
