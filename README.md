@@ -5,6 +5,10 @@
 <sub>Detection output on a sample optical lens image: defective regions 
 are segmented and highlighted, with defect classification overlaid</sub>
 
+(This branch is an attempt to implement a machine learning based approach for 
+fault detection and classification (FDC) in semiconductor manufacturing, as 
+opposed to the classical image processing techniques.)
+
 A C++ and OpenCV based computer vision system for automated detection and 
 classification of defects on semiconductor wafer surfaces. Designed to segment 
 defective regions from high-resolution wafer imagery and identify defect type. 
@@ -31,3 +35,5 @@ git clone https://github.com/vetrivln/WaferDefectDetection
 - **Compiler:** Visual Studio 2019/2022
 - **OpenCV:** 4.x
 - **.NET:** 4.7.2 or higher
+- Python 
+- PyTorch

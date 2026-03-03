@@ -142,6 +142,9 @@
   <ItemGroup>
     <ResourceCompile Include="wafer-defect-detection.rc" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="src\export_model.py" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

@@ -23,6 +23,17 @@ namespace waferdefectdetection
       InitializeComponent ();
       current_defects_ = gcnew System::Collections::Generic::List<IntPtr> ();
       has_image_ = false;
+      
+      try 
+      {
+        classifier_ = new DefectClassifier ("defect_model.onnx");
+      }
+      catch (const std::exception& e)
+      {
+        MessageBox::Show ("Warning: CNN model not loaded. Classification disabled.\n" + 
+                          gcnew String(e.what()));
+        classifier_ = nullptr;
+      }
     }
 
   protected:
@@ -30,6 +41,9 @@ namespace waferdefectdetection
     {
       if (components_)
         delete components_;
+      
+      if (classifier_)
+        delete classifier_;
     }
 
   private:
@@ -59,6 +73,8 @@ namespace waferdefectdetection
     cv::Mat* stored_display_;
     std::vector<Defect>* stored_defects_;
     System::Collections::Generic::List<IntPtr>^ current_defects_;
+    
+    DefectClassifier* classifier_;
 
 #pragma region Windows Form Designer generated code
     void
@@ -410,6 +426,17 @@ namespace waferdefectdetection
       cv::Mat defect_mask = detect_defects (*stored_corrected_, *stored_mask_, threshold);
 
       stored_defects_ = new std::vector<Defect> (analyze_defects (defect_mask));
+
+      // CLASSIFY EACH DEFECT USING CNN
+      if (classifier_ != nullptr)
+      {
+        for (auto& defect : *stored_defects_)
+        {
+          cv::Mat roi = (*stored_corrected_)(defect.bounding_box);
+          std::string defect_type = classifier_->classify(roi);
+          defect.type = defect_type;  // Store classification result
+        }
+      }
 
       float lens_pixels = (float) cv::countNonZero (*stored_mask_);
       float defect_pixels = (float) cv::countNonZero (defect_mask);

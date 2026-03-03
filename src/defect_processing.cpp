@@ -1,4 +1,5 @@
 #include "defect_processing.h"
+#include <opencv2/dnn.hpp>
 
 cv::Mat
 extract_lens_mask (const cv::Mat& gray)
@@ -158,4 +159,30 @@ build_annotated_display (const cv::Mat& corrected,
     }
 
   return display;
+}
+
+DefectClassifier::DefectClassifier(const std::string& model_path)
+{
+  net_ = cv::dnn::readNetFromONNX(model_path);
+  net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+  net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+}
+
+std::string DefectClassifier::classify(const cv::Mat& defect_roi)
+{
+  cv::Mat resized, blob;
+  cv::resize(defect_roi, resized, cv::Size(224, 224));
+  
+  if (resized.channels() == 3)
+    cv::cvtColor(resized, resized, cv::COLOR_BGR2GRAY);
+  
+  blob = cv::dnn::blobFromImage(resized, 1.0/255.0, cv::Size(224, 224));
+  
+  net_.setInput(blob);
+  cv::Mat output = net_.forward();
+  
+  cv::Point maxLoc;
+  cv::minMaxLoc(output.reshape(1, 1), nullptr, nullptr, nullptr, &maxLoc);
+  
+  return classes_[maxLoc.x];
 }
